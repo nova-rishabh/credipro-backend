@@ -1,14 +1,14 @@
 import fs from 'fs';
 import path from 'path';
 
-import type { Witnesses } from '../../contracts/contract/index.js';
+import type { Witnesses } from '../../dist/contracts/contract/index.js';
 
-const contractModulePath = path.join(__dirname, '../../contracts/contract/index.js');
+const contractModulePath = path.join(__dirname, '../../dist/contracts/contract/index.js');
 const describeContract = fs.existsSync(contractModulePath) ? describe : describe.skip;
 
 describeContract('Compiled Compact Contract Loading Verification', () => {
   it('should successfully import and instantiate the compiled Credipro contract', async () => {
-    const { Contract, ledger, pureCircuits } = await new Function("return import('../../contracts/contract/index.js')")();
+    const { Contract, ledger, pureCircuits } = await new Function("return import('../../dist/contracts/contract/index.js')")();
 
     const dummyWitnesses: Witnesses<unknown> = {
       mock_zkTLS_CreditScore: (context: { privateState: unknown }) => [context.privateState, 750n],
