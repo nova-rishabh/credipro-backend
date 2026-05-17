@@ -29,6 +29,17 @@ app.use(helmet());
 app.use(cors());
 app.use(express.json({ limit: '1mb' }));
 
+// Ensure BigInt and Uint8Array values are safely serialized to JSON
+app.set('json replacer', (_key: string, value: any) => {
+  if (typeof value === 'bigint') {
+    return value.toString();
+  }
+  if (value instanceof Uint8Array) {
+    return '0x' + Buffer.from(value).toString('hex');
+  }
+  return value;
+});
+
 app.use('/api', createAuthRouter(JWT_SECRET));
 app.use('/api', createHealthRouter(contractAddress));
 app.use('/api', createLoanRouter(authMiddleware));
