@@ -150,13 +150,13 @@ export class CrediproClient {
           defaultThreshold: defaultTermDays
         });
 
-        const proofHex = res.proofData && res.proofData.output ? bytesToHex(res.proofData.output.value || new Uint8Array()) : undefined;
+        const proofHex = res.proofData ? JSON.stringify(res.proofData) : undefined;
 
         return {
           success: true,
           loanId: toBytes32(loanIdHex),
           proof: proofHex,
-          gasUsed: String(res.gasCost || 0)
+          gasUsed: String(res.gasCost?.computeTime || res.gasCost?.readTime || 0)
         };
       } catch (e: any) {
         logger.warn('[CONTRACT] Compiled circuit failed, falling back to mock circuit:', e?.message || e);
@@ -262,7 +262,7 @@ export class CrediproClient {
         };
       } catch (e: any) {
         logger.warn('[CONTRACT] Compiled triggerSlashing failed, falling back to mock circuit:', e?.message || e);
-
+        // Fall back to mock circuit
         await this.callCircuit('triggerSlashing', { loanId });
 
         logger.info(`[CONTRACT] Slashing triggered (mock fallback) for loan ${loanId}`);
@@ -484,6 +484,8 @@ export class CrediproClient {
     return fs.existsSync(modulePath);
   }
 
+  private contractModule: any = null;
+
   private async ensureContractLoaded(): Promise<void> {
     if (this.contractLoaded) return;
 
@@ -491,6 +493,7 @@ export class CrediproClient {
 
     // dynamic import workaround for ESM/CJS
     const mod = await new Function("return import('" + modulePath + "')")();
+    this.contractModule = mod;
 
     const ContractCtor = mod.Contract;
 
@@ -523,16 +526,47 @@ export class CrediproClient {
 
   private async buildCompiledCircuitContext(): Promise<any> {
     if (!this.contractLoaded) throw new Error('Compiled contract not loaded');
-
-    const coinPub = this.initialZswapLocalState?.coinPublicKey ?? new Uint8Array(32);
-    const stateData = this.initialContractState?.data ?? undefined;
-    const privateState = this.initialPrivateState ?? {};
-
-    // dynamic import to avoid ESM/CJS issues in Jest
     const runtime = await new Function("return import('@midnight-ntwrk/compact-runtime')")();
-
+    const coinPub = this.initialZswapLocalState?.coinPublicKey ?? new Uint8Array(32);
+    const stateData = this.initialContractState?.data;
+    const privateState = this.initialPrivateState ?? {};
     const ctx = runtime.createCircuitContext(runtime.dummyContractAddress(), coinPub, stateData, privateState);
-    return { currentQueryContext: ctx.currentQueryContext, currentPrivateState: ctx.currentPrivateState };
+    const partialProofData = { input: { value: [] as number[], alignment: [] as number[] }, output: undefined, publicTranscript: [] as any[], privateTranscriptOutputs: [] as any[] };
+
+    // Seed a test pool into the ledger state so the compiled circuit can read it
+    try {
+      const desc = this.contractModule.__contractDescriptors;
+      if (desc) {
+        const poolAddr = new Uint8Array(32).fill(0xbb);
+        const uintIdxAlign = desc.UintIndex.alignment();
+        const poolAddrEncoded = runtime.StateValue.newCell({ value: desc.Bytes32.toValue(poolAddr), alignment: desc.Bytes32.alignment() }).encode();
+
+        // Insert pool TVL into liquidityPools at path [0n, poolAddr]
+        // Note: idx path uses RAW toValue (not encoded cell) for constants
+        runtime.queryLedgerState(ctx, partialProofData, [
+          { idx: { cached: false, pushPath: true, path: [{ tag: 'value', value: { value: desc.UintIndex.toValue(0n), alignment: uintIdxAlign } }] } },
+          { push: { storage: false, value: poolAddrEncoded } },
+          { push: { storage: true, value: runtime.StateValue.newCell({ value: desc.Uint64.toValue(BigInt(10000000)), alignment: desc.Uint64.alignment() }).encode() } },
+          { ins: { cached: false, n: 1 } },
+          { ins: { cached: true, n: 1 } },
+        ]);
+
+        // Insert risk params into publicRiskParameters at path [1n, poolAddr]
+        runtime.queryLedgerState(ctx, partialProofData, [
+          { idx: { cached: false, pushPath: true, path: [{ tag: 'value', value: { value: desc.UintIndex.toValue(1n), alignment: uintIdxAlign } }] } },
+          { push: { storage: false, value: poolAddrEncoded } },
+          { push: { storage: true, value: runtime.StateValue.newCell({ value: desc.PublicRiskParam.toValue({ minCreditScore: 680, maxLTV: 80, minMonthlyIncome: BigInt(5000) }), alignment: desc.PublicRiskParam.alignment() }).encode() } },
+          { ins: { cached: false, n: 1 } },
+          { ins: { cached: true, n: 1 } },
+        ]);
+
+        logger.info('[CONTRACT] Test pool seeded into ledger state');
+      }
+    } catch (e) {
+      logger.warn('[CONTRACT] Failed to seed pool data:', e);
+    }
+
+    return { currentQueryContext: ctx.currentQueryContext, currentPrivateState: ctx.currentPrivateState, costModel: ctx.costModel };
   }
 
 }

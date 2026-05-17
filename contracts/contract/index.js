@@ -1177,6 +1177,13 @@ const _dummyContract = new Contract({
   verify_mla_signature: (...args) => undefined
 });
 export const pureCircuits = {};
+
+export const __contractDescriptors = {
+  Bytes32: _descriptor_1,
+  Uint64: _descriptor_3,
+  PublicRiskParam: _descriptor_6,
+  UintIndex: _descriptor_13,
+};
 export const contractReferenceLocations =
   { tag: 'publicLedgerArray', indices: { } };
 //# sourceMappingURL=index.js.map
