@@ -1,5 +1,6 @@
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
+import helmet from 'helmet';
 import dotenv from 'dotenv';
 import jwt from 'jsonwebtoken';
 import { CrediproClient } from './contract';
@@ -8,12 +9,34 @@ import { toBytes32, RequestLoanResponse, TriggerSlashingResponse, LoanRecord } f
 
 dotenv.config();
 
+if (!process.env.JWT_SECRET) {
+  console.error('[SERVER] FATAL: JWT_SECRET environment variable is required');
+  process.exit(1);
+}
+
+if (!process.env.CREDIPRO_ENCRYPTION_KEY) {
+  console.error('[SERVER] FATAL: CREDIPRO_ENCRYPTION_KEY environment variable is required');
+  process.exit(1);
+}
+
 const app = express();
 const PORT = process.env.PORT || 3001;
-const JWT_SECRET = process.env.JWT_SECRET || 'credipro-dev-secret';
+const JWT_SECRET: string = process.env.JWT_SECRET;
 
+app.use(helmet());
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '1mb' }));
+
+// Ensure BigInt and Uint8Array values are safely serialized to JSON
+app.set('json replacer', (_key: string, value: any) => {
+  if (typeof value === 'bigint') {
+    return value.toString();
+  }
+  if (value instanceof Uint8Array) {
+    return '0x' + Buffer.from(value).toString('hex');
+  }
+  return value;
+});
 
 export interface AuthenticatedRequest extends Request {
   user?: any;
@@ -157,6 +180,7 @@ app.get('/api/pool/:address', authMiddleware, async (req: AuthenticatedRequest, 
         riskParams: {
           ...pool.riskParams,
           minMonthlyIncome: pool.riskParams.minMonthlyIncome.toString(),
+          maxLoanAmount: pool.riskParams.maxLoanAmount.toString(),
         },
       });
     } else {

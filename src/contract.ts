@@ -276,7 +276,8 @@ export class CrediproClient {
         riskParams: {
           minCreditScore: 680,
           maxLTV: 80,
-          minMonthlyIncome: BigInt(5000)
+          minMonthlyIncome: BigInt(5000),
+          maxLoanAmount: BigInt(500000)
         }
       };
 

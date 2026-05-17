@@ -9,7 +9,8 @@
  */
 
 import { CreditData, IdentityData, EncryptedIdentity, Bytes32 } from './types';
-import { randomBytes, scryptSync, createHash, createCipheriv, createDecipheriv } from 'crypto';
+import { randomBytes, scryptSync, createCipheriv, createDecipheriv } from 'crypto';
+import { hashNoPad } from 'poseidon-goldilocks';
 
 /**
  * Mock Credit Bureau
@@ -66,18 +67,18 @@ export class MockCreditBureau {
    * Score varies based on borrowerId hash
    */
   private deterministic_credit_score(borrowerId: string): number {
-    const hash = createHash('sha256').update(borrowerId).digest('hex');
-    const hashNum = parseInt(hash.substring(0, 8), 16);
-    return 600 + (hashNum % 250);
+    const hash = hashNoPad([BigInt(Buffer.from(borrowerId).readUInt32BE(0))])[0];
+    const hashNum = Number(hash % 250n);
+    return 600 + hashNum;
   }
 
   /**
    * Deterministic monthly income generation
    */
   private deterministic_monthly_income(borrowerId: string): number {
-    const hash = createHash('sha256').update(borrowerId + 'income').digest('hex');
-    const hashNum = parseInt(hash.substring(0, 8), 16);
-    return 3000 + (hashNum % 7000);
+    const hash = hashNoPad([BigInt(Buffer.from(borrowerId + 'inc').readUInt32BE(0))])[0];
+    const hashNum = Number(hash % 7000n);
+    return 3000 + hashNum;
   }
 }
 
@@ -145,21 +146,20 @@ export class MockIdentityProvider {
    * Generate deterministic mock identity
    */
   private generateMockIdentity(borrowerId: string): IdentityData {
-    const hash = createHash('sha256').update(borrowerId).digest('hex');
-
+    const hash = hashNoPad([BigInt(Buffer.from(borrowerId).readUInt32BE(0))])[0];
     const firstNames = ['Alice', 'Bob', 'Charlie', 'Diana', 'Eve'];
     const lastNames = ['Smith', 'Johnson', 'Williams', 'Brown', 'Jones'];
 
-    const firstIdx = parseInt(hash.substring(0, 8), 16) % firstNames.length;
-    const lastIdx = parseInt(hash.substring(8, 16), 16) % lastNames.length;
+    const firstIdx = Number(hash % BigInt(firstNames.length));
+    const lastIdx = Number((hash / 10n) % BigInt(lastNames.length));
 
     return {
       firstName: firstNames[firstIdx],
       lastName: lastNames[lastIdx],
       passportId: `PAM${Math.random().toString(36).substring(7).toUpperCase()}`,
-      dateOfBirth: `${1970 + (parseInt(hash.substring(16, 20), 16) % 50)}-01-01`,
+      dateOfBirth: `${1970 + Number(hash % 50n)}-01-01`,
       nationalId: `ID${Math.random().toString(36).substring(7).toUpperCase()}`,
-      biometricHash: hash.substring(0, 32)
+      biometricHash: hash.toString(16).substring(0, 32)
     };
   }
 
