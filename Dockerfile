@@ -9,7 +9,7 @@ COPY contracts ./contracts
 RUN npm run build
 
 ENV NODE_ENV=production
-ENV PORT=8081
-EXPOSE 8081
+ENV PORT=8080
+EXPOSE 8080
 
 CMD ["node", "dist/server.js"]
