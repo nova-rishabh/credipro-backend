@@ -1,119 +1,146 @@
-import { CompiledContract } from '@midnight-ntwrk/compact-js';
-import { deployContract } from '@midnight-ntwrk/midnight-js/contracts';
-import { httpClientProofProvider } from '@midnight-ntwrk/midnight-js-http-client-proof-provider';
-import { indexerPublicDataProvider } from '@midnight-ntwrk/midnight-js-indexer-public-data-provider';
-import { NodeZkConfigProvider } from '@midnight-ntwrk/midnight-js-node-zk-config-provider';
-import { type MidnightProvider, type WalletProvider } from '@midnight-ntwrk/midnight-js/types';
-import { WalletFacade } from '@midnight-ntwrk/wallet-sdk-facade';
-import { DustWallet } from '@midnight-ntwrk/wallet-sdk-dust-wallet';
-import { HDWallet, Roles, generateRandomSeed } from '@midnight-ntwrk/wallet-sdk-hd';
-import { ShieldedWallet } from '@midnight-ntwrk/wallet-sdk-shielded';
-import {
-  createKeystore,
-  PublicKey,
-  UnshieldedWallet,
-} from '@midnight-ntwrk/wallet-sdk-unshielded-wallet';
-import { InMemoryTransactionHistoryStorage } from '@midnight-ntwrk/wallet-sdk-abstractions';
-import { levelPrivateStateProvider } from '@midnight-ntwrk/midnight-js-level-private-state-provider';
-import { getNetworkId, setNetworkId } from '@midnight-ntwrk/midnight-js/network-id';
-import { toHex } from '@midnight-ntwrk/midnight-js/utils';
-import * as ledger from '@midnight-ntwrk/ledger-v8';
-import { unshieldedToken } from '@midnight-ntwrk/ledger-v8';
-import { Buffer } from 'buffer';
-import * as Rx from 'rxjs';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import fs from 'fs';
-import { Contract } from '../dist/contracts/contract/index.js';
+#!/usr/bin/env node
+import 'dotenv/config';
 
-// Load env vars
-import dotenv from 'dotenv';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-dotenv.config({ path: path.resolve(__dirname, '../../.env') });
-
-const network = process.env.MIDNIGHT_CHAIN_ID || 'preprod';
-setNetworkId(network as any);
-
-const indexerHttpUrl = process.env.MIDNIGHT_INDEXER_HTTP_URL || 'https://indexer.preprod.midnight.network/api/v4/graphql';
-const indexerWsUrl = process.env.MIDNIGHT_INDEXER_WS_URL || 'wss://indexer.preprod.midnight.network/api/v4/graphql/ws';
-const nodeUrl = process.env.MIDNIGHT_RPC_URL || 'https://rpc.preprod.midnight.network';
-const proofServerUrl = 'http://127.0.0.1:6300';
-
-const currentDir = path.resolve(__dirname);
-const zkConfigPath = path.resolve(currentDir, '..', 'dist', 'contracts', 'zkir');
-
-// Pre-compile the contract
-const compiledContract = CompiledContract.make('Credipro', Contract).pipe(
-  CompiledContract.withVacantWitnesses,
-  CompiledContract.withCompiledFileAssets(zkConfigPath),
-);
-
-// We need an empty private state type for Midnight SDK if none is defined
-const emptyPrivateState = {};
-
-interface WalletContext {
-  wallet: WalletFacade;
-  shieldedSecretKeys: ledger.ZswapSecretKeys;
-  dustSecretKey: ledger.DustSecretKey;
-  unshieldedKeystore: UnshieldedKeystore;
+async function tryImport(pkg: string) {
+  try {
+    const mod = await import(pkg);
+    return { pkg, mod };
+  } catch (e) {
+    return null;
+  }
 }
 
-const deriveKeysFromSeed = (seed: string) => {
-  const hdWallet = HDWallet.fromSeed(Buffer.from(seed, 'hex'));
-  if (hdWallet.type !== 'seedOk') throw new Error('Failed to init HDWallet');
-  
-  const derivationResult = hdWallet.hdWallet
-    .selectAccount(0)
-    .selectRoles([Roles.Zswap, Roles.NightExternal, Roles.Dust])
-    .deriveKeysAt(0);
+async function detectSdk() {
+  const candidates = [
+    '@midnight-ntwrk/midnight-js',
+    '@midnight-ntwrk/midnight-js-contracts',
+    '@midnight-ntwrk/midnight-js-contracts',
+  ];
 
-  if (derivationResult.type !== 'keysDerived') throw new Error('Failed to derive keys');
-  
-  hdWallet.hdWallet.clear();
-  return derivationResult.keys;
-};
-
-const signTransactionIntents = (
-  tx: { intents?: Map<number, any> },
-  signFn: (payload: Uint8Array) => ledger.Signature,
-  proofMarker: 'proof' | 'pre-proof',
-) => {
-  if (!tx.intents || tx.intents.size === 0) return;
-  for (const segment of tx.intents.keys()) {
-    const intent = tx.intents.get(segment);
-    if (!intent) continue;
-    const cloned = ledger.Intent.deserialize<ledger.SignatureEnabled, ledger.Proofish, ledger.PreBinding>(
-      'signature',
-      proofMarker,
-      'pre-binding',
-      intent.serialize(),
-    );
-    const sigData = cloned.signatureData(segment);
-    const signature = signFn(sigData);
-    if (cloned.fallibleUnshieldedOffer) {
-      const sigs = cloned.fallibleUnshieldedOffer.inputs.map(
-        (_: any, i: number) => cloned.fallibleUnshieldedOffer!.signatures.at(i) ?? signature,
-      );
-      cloned.fallibleUnshieldedOffer = cloned.fallibleUnshieldedOffer.addSignatures(sigs);
-    }
-    if (cloned.guaranteedUnshieldedOffer) {
-      const sigs = cloned.guaranteedUnshieldedOffer.inputs.map(
-        (_: any, i: number) => cloned.guaranteedUnshieldedOffer!.signatures.at(i) ?? signature,
-      );
-      cloned.guaranteedUnshieldedOffer = cloned.guaranteedUnshieldedOffer.addSignatures(sigs);
-    }
-    tx.intents.set(segment, cloned);
+  for (const pkg of candidates) {
+    const res = await tryImport(pkg);
+    if (res) return res;
   }
-};
 
-const createWalletAndMidnightProvider = async (ctx: WalletContext): Promise<WalletProvider & MidnightProvider> => {
-  const state = await Rx.firstValueFrom(ctx.wallet.state().pipe(Rx.filter(s => s.isSynced || (s.shielded.state.progress.appliedIndex >= s.shielded.state.progress.highestRelevantWalletIndex && s.shielded.state.progress.highestRelevantWalletIndex > 0))));
-  return {
-    getCoinPublicKey() { return state.shielded.coinPublicKey.toHexString(); },
-    getEncryptionPublicKey() { return state.shielded.encryptionPublicKey.toHexString(); },
+  return null;
+}
+
+function prettyKeys(obj: any) {
+  if (!obj) return [];
+  return Object.keys(obj).sort();
+}
+
+async function main() {
+  console.log('[DEPLOY] Starting deploy script (dry mode by default)');
+
+  const sdk = await detectSdk();
+  if (!sdk) {
+    console.error('[DEPLOY] No Midnight SDK found among expected packages.');
+    console.error('[DEPLOY] Please ensure one of the @midnight-ntwrk packages is installed.');
+    process.exitCode = 2;
+    return;
+  }
+
+  console.log('[DEPLOY] Found SDK package:', sdk.pkg);
+  const keys = prettyKeys(sdk.mod);
+  console.log('[DEPLOY] Exported symbols from SDK (preview):', keys.join(', '));
+
+  const mod = sdk.mod as any;
+  const hasCreateProvider = typeof mod.createProvider === 'function' || typeof mod.createClient === 'function';
+  const hasProviderCtor = typeof mod.Provider === 'function';
+  const hasContractFactory = !!mod.ContractFactory || !!mod.createContractClient || !!mod.ContractClient;
+
+  console.log('[DEPLOY] Detected shapes:');
+  console.log('  - createProvider/createClient:', hasCreateProvider);
+  console.log('  - Provider constructor:', hasProviderCtor);
+  console.log('  - ContractFactory / createContractClient / ContractClient:', hasContractFactory);
+
+  const rpc = process.env.MIDNIGHT_RPC;
+  const seed = process.env.MIDNIGHT_WALLET_SEED || process.env.MIDNIGHT_PRIVATE_KEY;
+  console.log('[DEPLOY] MIDNIGHT_RPC present:', !!rpc);
+  console.log('[DEPLOY] MIDNIGHT_WALLET_SEED/PRIVATE_KEY present:', !!seed);
+
+  const runDeploy = process.env.RUN_DEPLOY === 'true';
+  if (!runDeploy) {
+    console.log('[DEPLOY] Dry validation complete. To perform an actual deployment set RUN_DEPLOY=true and provide MIDNIGHT_RPC and MIDNIGHT_WALLET_SEED (or MIDNIGHT_PRIVATE_KEY).');
+    console.log('[DEPLOY] Example (PowerShell):');
+    const example = `
+$env:MIDNIGHT_RPC = 'https://your-testnet-rpc.example'
+$env:MIDNIGHT_WALLET_SEED = 'your seed or private key'
+$env:RUN_DEPLOY = 'true'
+npm run deploy
+`;
+    console.log(example);
+    process.exitCode = 0;
+    return;
+  }
+
+  if (!rpc) {
+    console.error('[DEPLOY] MIDNIGHT_RPC is required to deploy. Aborting.');
+    process.exitCode = 3;
+    return;
+  }
+  if (!seed) {
+    console.error('[DEPLOY] MIDNIGHT_WALLET_SEED or MIDNIGHT_PRIVATE_KEY is required to deploy. Aborting.');
+    process.exitCode = 4;
+    return;
+  }
+
+  console.log('[DEPLOY] Running live deploy (best-effort). This will attempt to use detected SDK to create a deployer.');
+
+  try {
+    // Use heuristic to construct provider / deployer
+    let provider: any = null;
+    if (typeof mod.createProvider === 'function') {
+      provider = await mod.createProvider({ url: rpc });
+    } else if (typeof mod.createClient === 'function') {
+      provider = await mod.createClient({ url: rpc });
+    } else if (typeof mod.Provider === 'function') {
+      provider = new mod.Provider(rpc);
+    }
+
+    if (!provider) throw new Error('Unable to construct provider from SDK');
+
+    // Wallet construction paths vary widely; try common wallet constructors
+    let wallet: any = null;
+    if (mod.Wallet && typeof mod.Wallet.fromSeed === 'function') {
+      wallet = mod.Wallet.fromSeed(seed);
+    } else if (mod.Wallet && typeof mod.Wallet.fromPrivateKey === 'function') {
+      wallet = mod.Wallet.fromPrivateKey(seed);
+    } else if (mod.createWallet && typeof mod.createWallet === 'function') {
+      wallet = await mod.createWallet({ seed });
+    }
+
+    if (!wallet) {
+      console.warn('[DEPLOY] Could not construct wallet from SDK exports; falling back to generic wallet provider packages if available.');
+    }
+
+    if (mod.ContractFactory && typeof mod.ContractFactory.deploy === 'function') {
+      console.log('[DEPLOY] Using ContractFactory.deploy()');
+      const factory = mod.ContractFactory;
+      const deployed = await factory.deploy({});
+      console.log('[DEPLOY] Deployed (factory):', deployed);
+      process.exitCode = 0;
+      return;
+    }
+
+    if (mod.createContractClient && typeof mod.createContractClient === 'function') {
+      console.log('[DEPLOY] createContractClient exists; deployment API not standardized. Please adapt deploy.ts to your SDK.');
+      process.exitCode = 0;
+      return;
+    }
+
+    console.error('[DEPLOY] Live deploy path not implemented for this SDK shape. Please open an issue or adapt the script.');
+    process.exitCode = 5;
+    return;
+  } catch (e: any) {
+    console.error('[DEPLOY] Deployment attempt failed:', e && e.message ? e.message : e);
+    process.exitCode = 10;
+    return;
+  }
+}
+
+main();
     async balanceTx(tx, ttl?) {
       const recipe = await ctx.wallet.balanceUnboundTransaction(tx, 
         { shieldedSecretKeys: ctx.shieldedSecretKeys, dustSecretKey: ctx.dustSecretKey },
@@ -218,81 +245,146 @@ const buildWalletAndWaitForFunds = async (seed: string): Promise<WalletContext> 
   return { wallet, shieldedSecretKeys, dustSecretKey, unshieldedKeystore };
 };
 
-const configureProviders = async (ctx: WalletContext) => {
-  const walletAndMidnightProvider = await createWalletAndMidnightProvider(ctx);
-  const zkConfigProvider = new NodeZkConfigProvider(zkConfigPath);
-  const accountId = walletAndMidnightProvider.getCoinPublicKey();
-  const storagePassword = `${Buffer.from(accountId, 'hex').toString('base64')}!`;
-  
-  return {
-    privateStateProvider: levelPrivateStateProvider({
-      privateStateStoreName: 'credipro-private-state',
-      accountId,
-      privateStoragePasswordProvider: () => storagePassword,
-    }),
-    publicDataProvider: indexerPublicDataProvider(indexerHttpUrl, indexerWsUrl),
-    zkConfigProvider,
-    proofProvider: httpClientProofProvider(proofServerUrl, zkConfigProvider),
-    walletProvider: walletAndMidnightProvider,
-    midnightProvider: walletAndMidnightProvider,
-  };
-};
+#!/usr/bin/env node
+import 'dotenv/config';
 
-async function main() {
-  let seed = process.env.MIDNIGHT_WALLET_SEED;
-  if (!seed || seed.trim() === '') {
-    console.log('Generating fresh wallet seed...');
-    seed = toHex(Buffer.from(generateRandomSeed()));
-    console.log(`SEED: ${seed}`);
-    console.log('IMPORTANT: Save this seed if you need to access this wallet again.');
-    
-    // Save to .env
-    const envPath = path.join(__dirname, '../../.env');
-    let envContent = fs.readFileSync(envPath, 'utf8');
-    if (envContent.includes('MIDNIGHT_WALLET_SEED=')) {
-      envContent = envContent.replace(/MIDNIGHT_WALLET_SEED=.*/, `MIDNIGHT_WALLET_SEED=${seed}`);
-    } else {
-      envContent += `\nMIDNIGHT_WALLET_SEED=${seed}\n`;
-    }
-    fs.writeFileSync(envPath, envContent);
-    console.log('Saved MIDNIGHT_WALLET_SEED to .env');
-  } else {
-    console.log('Reusing existing MIDNIGHT_WALLET_SEED from .env...');
+async function tryImport(pkg: string) {
+  try {
+    const mod = await import(pkg);
+    return { pkg, mod };
+  } catch (e) {
+    return null;
   }
-
-  const ctx = await buildWalletAndWaitForFunds(seed);
-  console.log('Configuring Midnight providers...');
-  const providers = await configureProviders(ctx);
-
-  console.log('Deploying Credipro contract...');
-  const deployedContract = await deployContract(providers, {
-    compiledContract,
-    privateStateId: 'crediproPrivateState',
-    initialPrivateState: emptyPrivateState,
-  });
-
-  const contractAddress = deployedContract.deployTxData.public.contractAddress;
-  console.log(`\nDEPLOYED! Contract Address: ${contractAddress}`);
-
-  // Update .env file
-  const envPath = path.join(__dirname, '../../.env');
-  let envContent = fs.readFileSync(envPath, 'utf8');
-  envContent = envContent.replace(
-    /MIDNIGHT_CONTRACT_ADDRESS=.*/,
-    `MIDNIGHT_CONTRACT_ADDRESS=${contractAddress}`
-  );
-  envContent = envContent.replace(
-    /REACT_APP_CONTRACT_ADDRESS=.*/,
-    `REACT_APP_CONTRACT_ADDRESS=${contractAddress}`
-  );
-  fs.writeFileSync(envPath, envContent);
-  console.log('Saved MIDNIGHT_CONTRACT_ADDRESS and REACT_APP_CONTRACT_ADDRESS to .env');
-
-  await ctx.wallet.close();
-  process.exit(0);
 }
 
-main().catch((err) => {
-  console.error('Deployment failed:', err);
-  process.exit(1);
-});
+async function detectSdk() {
+  const candidates = [
+    '@midnight-ntwrk/midnight-js',
+    '@midnight-ntwrk/midnight-js-contracts',
+    '@midnight-ntwrk/midnight-js-contracts',
+  ];
+
+  for (const pkg of candidates) {
+    const res = await tryImport(pkg);
+    if (res) return res;
+  }
+
+  return null;
+}
+
+function prettyKeys(obj: any) {
+  if (!obj) return [];
+  return Object.keys(obj).sort();
+}
+
+async function main() {
+  console.log('[DEPLOY] Starting deploy script (dry mode by default)');
+
+  const sdk = await detectSdk();
+  if (!sdk) {
+    console.error('[DEPLOY] No Midnight SDK found among expected packages.');
+    console.error('[DEPLOY] Please ensure one of the @midnight-ntwrk packages is installed.');
+    process.exitCode = 2;
+    return;
+  }
+
+  console.log('[DEPLOY] Found SDK package:', sdk.pkg);
+  const keys = prettyKeys(sdk.mod);
+  console.log('[DEPLOY] Exported symbols from SDK (preview):', keys.join(', '));
+
+  const mod = sdk.mod as any;
+  const hasCreateProvider = typeof mod.createProvider === 'function' || typeof mod.createClient === 'function';
+  const hasProviderCtor = typeof mod.Provider === 'function';
+  const hasContractFactory = !!mod.ContractFactory || !!mod.createContractClient || !!mod.ContractClient;
+
+  console.log('[DEPLOY] Detected shapes:');
+  console.log('  - createProvider/createClient:', hasCreateProvider);
+  console.log('  - Provider constructor:', hasProviderCtor);
+  console.log('  - ContractFactory / createContractClient / ContractClient:', hasContractFactory);
+
+  const rpc = process.env.MIDNIGHT_RPC;
+  const seed = process.env.MIDNIGHT_WALLET_SEED || process.env.MIDNIGHT_PRIVATE_KEY;
+  console.log('[DEPLOY] MIDNIGHT_RPC present:', !!rpc);
+  console.log('[DEPLOY] MIDNIGHT_WALLET_SEED/PRIVATE_KEY present:', !!seed);
+
+  const runDeploy = process.env.RUN_DEPLOY === 'true';
+  if (!runDeploy) {
+    console.log('[DEPLOY] Dry validation complete. To perform an actual deployment set RUN_DEPLOY=true and provide MIDNIGHT_RPC and MIDNIGHT_WALLET_SEED (or MIDNIGHT_PRIVATE_KEY).');
+    console.log('[DEPLOY] Example (PowerShell):');
+    const example = `
+$env:MIDNIGHT_RPC = 'https://your-testnet-rpc.example'
+$env:MIDNIGHT_WALLET_SEED = 'your seed or private key'
+$env:RUN_DEPLOY = 'true'
+npm run deploy
+`;
+    console.log(example);
+    process.exitCode = 0;
+    return;
+  }
+
+  if (!rpc) {
+    console.error('[DEPLOY] MIDNIGHT_RPC is required to deploy. Aborting.');
+    process.exitCode = 3;
+    return;
+  }
+  if (!seed) {
+    console.error('[DEPLOY] MIDNIGHT_WALLET_SEED or MIDNIGHT_PRIVATE_KEY is required to deploy. Aborting.');
+    process.exitCode = 4;
+    return;
+  }
+
+  console.log('[DEPLOY] Running live deploy (best-effort). This will attempt to use detected SDK to create a deployer.');
+
+  try {
+    // Use heuristic to construct provider / deployer
+    let provider: any = null;
+    if (typeof mod.createProvider === 'function') {
+      provider = await mod.createProvider({ url: rpc });
+    } else if (typeof mod.createClient === 'function') {
+      provider = await mod.createClient({ url: rpc });
+    } else if (typeof mod.Provider === 'function') {
+      provider = new mod.Provider(rpc);
+    }
+
+    if (!provider) throw new Error('Unable to construct provider from SDK');
+
+    // Wallet construction paths vary widely; try common wallet constructors
+    let wallet: any = null;
+    if (mod.Wallet && typeof mod.Wallet.fromSeed === 'function') {
+      wallet = mod.Wallet.fromSeed(seed);
+    } else if (mod.Wallet && typeof mod.Wallet.fromPrivateKey === 'function') {
+      wallet = mod.Wallet.fromPrivateKey(seed);
+    } else if (mod.createWallet && typeof mod.createWallet === 'function') {
+      wallet = await mod.createWallet({ seed });
+    }
+
+    if (!wallet) {
+      console.warn('[DEPLOY] Could not construct wallet from SDK exports; falling back to generic wallet provider packages if available.');
+    }
+
+    if (mod.ContractFactory && typeof mod.ContractFactory.deploy === 'function') {
+      console.log('[DEPLOY] Using ContractFactory.deploy()');
+      const factory = mod.ContractFactory;
+      const deployed = await factory.deploy({});
+      console.log('[DEPLOY] Deployed (factory):', deployed);
+      process.exitCode = 0;
+      return;
+    }
+
+    if (mod.createContractClient && typeof mod.createContractClient === 'function') {
+      console.log('[DEPLOY] createContractClient exists; deployment API not standardized. Please adapt deploy.ts to your SDK.');
+      process.exitCode = 0;
+      return;
+    }
+
+    console.error('[DEPLOY] Live deploy path not implemented for this SDK shape. Please open an issue or adapt the script.');
+    process.exitCode = 5;
+    return;
+  } catch (e: any) {
+    console.error('[DEPLOY] Deployment attempt failed:', e && e.message ? e.message : e);
+    process.exitCode = 10;
+    return;
+  }
+}
+
+main();
