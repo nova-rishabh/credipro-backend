@@ -6,7 +6,7 @@ const describeContract = fs.existsSync(contractModulePath) ? describe : describe
 
 describeContract('Compiled Compact Contract Loading Verification', () => {
   it('should successfully import and instantiate the compiled Credipro contract', () => {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { Contract, ledger, pureCircuits, Witnesses } = require('../../dist/contracts/contract');
 
     const dummyWitnesses = {
