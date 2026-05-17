@@ -37,8 +37,12 @@ app.use(cors({
 // 2. Handle preflight requests explicitly
 app.options('*', cors());
 
-// 3. helmet after cors
-app.use(helmet());
+// 3. helmet after cors — disable directives that block cross-origin requests
+app.use(helmet({
+  crossOriginResourcePolicy: false,
+  crossOriginOpenerPolicy: false,
+}));
+
 app.use(express.json({ limit: '1mb' }));
 
 // Ensure BigInt and Uint8Array values are safely serialized to JSON
