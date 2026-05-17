@@ -24,7 +24,15 @@ const PORT = process.env.PORT || 3001;
 const JWT_SECRET: string = process.env.JWT_SECRET;
 
 app.use(helmet());
-app.use(cors());
+app.use(cors({
+  origin: [
+    'https://credipro-frontend-production.up.railway.app',
+    'http://localhost:3000',
+  ],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true,
+}));
 app.use(express.json({ limit: '1mb' }));
 
 // Ensure BigInt and Uint8Array values are safely serialized to JSON
