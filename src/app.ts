@@ -9,18 +9,26 @@ import { createAuthRouter } from './routes/auth.routes';
 import { createHealthRouter } from './routes/health.routes';
 import { createLoanRouter } from './routes/loan.routes';
 import { createOracleRouter } from './routes/oracle.routes';
+import { createModeRouter } from './routes/mode.routes';
+import { isDemo } from './lib/appMode';
 
 if (!process.env.JWT_SECRET) {
-  logger.error('[SERVER] FATAL: JWT_SECRET environment variable is required');
-  process.exit(1);
+  if (!isDemo()) {
+    logger.error('[SERVER] FATAL: JWT_SECRET environment variable is required');
+    process.exit(1);
+  }
+  logger.warn('[SERVER] JWT_SECRET not set — running in demo mode with auto-generated fallback');
 }
 
 if (!process.env.CREDIPRO_ENCRYPTION_KEY) {
-  logger.error('[SERVER] FATAL: CREDIPRO_ENCRYPTION_KEY environment variable is required');
-  process.exit(1);
+  if (!isDemo()) {
+    logger.error('[SERVER] FATAL: CREDIPRO_ENCRYPTION_KEY environment variable is required');
+    process.exit(1);
+  }
+  logger.warn('[SERVER] CREDIPRO_ENCRYPTION_KEY not set — running in demo mode with fallback key');
 }
 
-const JWT_SECRET: string = process.env.JWT_SECRET;
+const JWT_SECRET: string = process.env.JWT_SECRET || 'demo-secret-key-not-for-production';
 const authMiddleware = createAuthMiddleware(JWT_SECRET);
 
 const app = express();
@@ -44,5 +52,6 @@ app.use('/api', createAuthRouter(JWT_SECRET));
 app.use('/api', createHealthRouter(contractAddress));
 app.use('/api', createLoanRouter(authMiddleware));
 app.use('/api', createOracleRouter(authMiddleware));
+app.use('/api', createModeRouter());
 
 export default app;

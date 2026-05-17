@@ -5,10 +5,12 @@ import { contractAddress } from './config/client';
 
 const PORT = process.env.PORT || 3001;
 
+import { getMode } from './lib/appMode';
+
 if (process.env.NODE_ENV !== 'test') {
   app.listen(PORT, () => {
     logger.info(`[SERVER] Credipro backend running on port ${PORT}`);
-    logger.info(`[SERVER] Mock mode: ${process.env.MOCK_ORACLE_MODE !== 'false'}`);
+    logger.info(`[SERVER] Mode: ${getMode()}`);
     logger.info(`[SERVER] Contract address: ${contractAddress}`);
   });
 }

@@ -4,6 +4,7 @@ import { mockOracleService } from '../services/oracle';
 import { AuthenticatedRequest } from '../middleware/auth';
 import { logger } from '../lib/logger';
 import { toBytes32 } from '../types';
+import { isDemo } from '../lib/appMode';
 
 function oracleThresholds(): { totalMembers: number; threshold: number } {
   const totalMembers = process.env.ORACLE_MEMBER_COUNT ? parseInt(process.env.ORACLE_MEMBER_COUNT, 10) : 3;
@@ -88,8 +89,8 @@ export function createOracleRouter(authMiddleware: RequestHandler): Router {
   // Demo helper: auto-vote by oracle-1 and oracle-2 (demo-only)
   router.post('/oracle/auto-vote/:loanId', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
     try {
-      if (process.env.MOCK_ORACLE_MODE !== 'true') {
-        res.status(403).json({ error: 'Auto-vote is only available in MOCK_ORACLE_MODE=true' });
+      if (!isDemo()) {
+        res.status(403).json({ error: 'Auto-vote is only available in demo mode' });
         return;
       }
       const { loanId } = req.params;

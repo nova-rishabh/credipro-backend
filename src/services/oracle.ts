@@ -3,6 +3,7 @@ import { randomBytes, scryptSync, createCipheriv, createDecipheriv } from 'crypt
 import { getDb } from '../lib/db';
 import { logger } from '../lib/logger';
 import { hashNoPad } from 'poseidon-goldilocks';
+import { isDemo } from '../lib/appMode';
 
 export class MockCreditBureau {
   async getCreditScore(borrowerId: string): Promise<CreditData> {
@@ -61,11 +62,15 @@ export class MockIdentityProvider {
 
   constructor() {
     if (!process.env.CREDIPRO_ENCRYPTION_KEY) {
-      throw new Error(
-        'CREDIPRO_ENCRYPTION_KEY environment variable is required for MockIdentityProvider'
-      );
+      if (!isDemo()) {
+        throw new Error(
+          'CREDIPRO_ENCRYPTION_KEY environment variable is required for MockIdentityProvider'
+        );
+      }
+      this.encryptionKey = 'demo-fallback-encryption-key-32chr!';
+    } else {
+      this.encryptionKey = process.env.CREDIPRO_ENCRYPTION_KEY;
     }
-    this.encryptionKey = process.env.CREDIPRO_ENCRYPTION_KEY;
   }
 
   async registerIdentity(borrowerId: string, identity: IdentityData): Promise<void> {
