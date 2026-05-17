@@ -23,7 +23,7 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 const JWT_SECRET: string = process.env.JWT_SECRET;
 
-app.use(helmet());
+// 1. Enable CORS with specific origins and settings before other middleware
 app.use(cors({
   origin: [
     'https://credipro-frontend-production.up.railway.app',
@@ -33,6 +33,12 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true,
 }));
+
+// 2. Handle preflight requests explicitly
+app.options('*', cors());
+
+// 3. helmet after cors
+app.use(helmet());
 app.use(express.json({ limit: '1mb' }));
 
 // Ensure BigInt and Uint8Array values are safely serialized to JSON
