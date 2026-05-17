@@ -14,7 +14,7 @@
     "test:integration": "cross-env NODE_OPTIONS=--experimental-vm-modules jest --testPathPattern=integration --runInBand",
     "lint": "eslint \"src/**/*.ts\"",
     "format": "prettier --write \"src/**/*.ts\"",
-    "compile:contract": "compact build ../contracts/Credipro.compact -o dist/contracts"
+    "compile:contract": "compact build ../contracts/Credipro.compact -o contracts"
   },
   "keywords": [
     "midnight",
