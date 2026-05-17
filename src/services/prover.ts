@@ -29,6 +29,17 @@ class PoseidonHasher {
   }
 }
 
+function hexToUint8(hex: string): Uint8Array {
+  if (hex.startsWith('0x')) hex = hex.slice(2);
+  const buf = Buffer.from(hex, 'hex');
+  if (buf.length !== 32) {
+    const padded = Buffer.alloc(32);
+    buf.copy(padded, 32 - buf.length);
+    return new Uint8Array(padded);
+  }
+  return new Uint8Array(buf);
+}
+
 type StoredLoanDetails = {
   loanId: Bytes32;
   disbursalTimestamp: number;
@@ -116,7 +127,8 @@ export async function local_secret_key(): Promise<Bytes32> {
   }
 
   logger.info('[WITNESS] local_secret_key: returning secret key');
-  return toBytes32(secretKey);
+  // Return Uint8Array-backed Bytes32 for compiled runtime compatibility
+  return hexToUint8(toBytes32(secretKey) as unknown as string) as unknown as Bytes32;
 }
 
 export async function get_lender_address(): Promise<Bytes32> {
@@ -199,13 +211,15 @@ export function witness_read_Identity_NFC(_context: { privateState: unknown }): 
 export function witness_compute_identity_hash(_context: { privateState: unknown }, passportData: Uint8Array): [unknown, Bytes32] {
   if (passportData.length === 0) throw new Error('Passport data is empty');
   const hash = PoseidonHasher.hash(Buffer.from(passportData));
-  return [_context.privateState, hash];
+  // Return runtime-compatible 32-byte Uint8Array for compiled witnesses
+  return [_context.privateState, hexToUint8(hash as unknown as string) as unknown as Bytes32];
 }
 
 export function witness_get_lender_address(context: { privateState: unknown }): [unknown, Bytes32] {
   const lenderAddr = witnessStorage.get('lenderAddress') as string | undefined;
   if (!lenderAddr) throw new Error('Lender address not found in witness storage. Set target pool address before requesting loan.');
-  return [context.privateState, toBytes32(lenderAddr)];
+  // Return Uint8Array-backed Bytes32 for compiled runtime compatibility
+  return [context.privateState, hexToUint8(toBytes32(lenderAddr) as unknown as string) as unknown as Bytes32];
 }
 
 export function witness_check_default_deadline_exceeded(context: { privateState: unknown }): [unknown, boolean] {
