@@ -207,6 +207,74 @@ describe('API /oracle', () => {
   });
 });
 
+describe('API /oracle demo endpoints', () => {
+  let authToken: string;
+
+  beforeAll(async () => {
+    const res = await request(app)
+      .post('/api/auth/token')
+      .send({ username: 'oracle-demo-tester' })
+      .set('Content-Type', 'application/json');
+    authToken = res.body.token;
+  });
+
+  it('POST /api/oracle/auto-vote/:loanId performs two votes in mock mode', async () => {
+    const loanId = '0x' + 'c'.repeat(64);
+    const res = await request(app)
+      .post(`/api/oracle/auto-vote/${loanId}`)
+      .set('Authorization', `Bearer ${authToken}`);
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty('approvalCount');
+    expect(res.body.approvalCount).toBeGreaterThanOrEqual(2);
+  });
+
+  it('POST /api/oracle/clear/:loanId clears votes for a loan', async () => {
+    const loanId = '0x' + 'c'.repeat(64);
+    const res = await request(app)
+      .post(`/api/oracle/clear/${loanId}`)
+      .set('Authorization', `Bearer ${authToken}`);
+    expect(res.status).toBe(200);
+    expect(res.body.cleared).toBe(true);
+  });
+
+  it('GET /api/oracle/revealed-identity/:loanId returns identity after consensus', async () => {
+    const loanId = '0x' + 'd'.repeat(64);
+    // Auto-vote to reach consensus
+    const vote = await request(app)
+      .post(`/api/oracle/auto-vote/${loanId}`)
+      .set('Authorization', `Bearer ${authToken}`);
+    expect(vote.status).toBe(200);
+
+    const res = await request(app)
+      .get(`/api/oracle/revealed-identity/${loanId}`)
+      .set('Authorization', `Bearer ${authToken}`);
+    expect(res.status).toBe(200);
+    expect(res.body.identity).toHaveProperty('firstName');
+    expect(res.body.identity).toHaveProperty('lastName');
+  });
+
+  it('GET /api/oracle/revealed-identity/:loanId returns 403 before consensus', async () => {
+    const loanId = '0x' + 'e'.repeat(64);
+    // Clear votes first
+    await request(app)
+      .post(`/api/oracle/clear/${loanId}`)
+      .set('Authorization', `Bearer ${authToken}`);
+    const res = await request(app)
+      .get(`/api/oracle/revealed-identity/${loanId}`)
+      .set('Authorization', `Bearer ${authToken}`);
+    expect(res.status).toBe(403);
+    expect(res.body).toHaveProperty('approvalCount');
+  });
+
+  it('DELETE /api/oracle/reset wipes mock data', async () => {
+    const res = await request(app)
+      .delete('/api/oracle/reset')
+      .set('Authorization', `Bearer ${authToken}`);
+    expect(res.status).toBe(200);
+    expect(res.body.reset).toBe(true);
+  });
+});
+
 describe('API /pool', () => {
   let authToken: string;
 
