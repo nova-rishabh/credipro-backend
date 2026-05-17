@@ -59,6 +59,18 @@ function authMiddleware(req: Request, res: Response, next: NextFunction): void {
   }
 }
 
+app.post('/api/auth/token', (req: Request, res: Response) => {
+  const { username } = req.body;
+  if (!username || typeof username !== 'string' || username.trim().length === 0) {
+    res.status(400).json({ error: 'Missing or invalid username' });
+    return;
+  }
+  const token = jwt.sign({ username: username.trim(), role: 'borrower' }, JWT_SECRET, {
+    expiresIn: '24h',
+  });
+  res.json({ token });
+});
+
 app.get('/api/health', (_req: Request, res: Response) => {
   res.json({
     status: 'ok',
