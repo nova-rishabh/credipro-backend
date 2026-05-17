@@ -162,6 +162,19 @@ describe('Credipro SDK', () => {
       expect(await mockOracleService.getApprovalCount(loanId)).toBe(2);
     });
 
+    test('Oracle committee voting allows voting by name', async () => {
+      const loanId = toBytes32('0x' + '6'.repeat(64));
+
+      // Vote using name instead of ID
+      const approved1 = await mockOracleService.voteApproval(loanId, 'Oracle Node 1');
+      expect(approved1).toBe(false);
+
+      const approved2 = await mockOracleService.voteApproval(loanId, 'Oracle Node 2');
+      expect(approved2).toBe(true);
+
+      expect(await mockOracleService.getApprovalCount(loanId)).toBe(2);
+    });
+
     test('Oracle committee returns members list', () => {
       const members = mockOracleService.getOracleMembers();
       expect(members.length).toBe(3);

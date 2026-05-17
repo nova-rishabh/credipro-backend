@@ -10,8 +10,8 @@ export async function getDb(): Promise<Database> {
   }
 
   dbInstance = await open({
-    filename: './credipro.sqlite',
-    driver: sqlite3.Database
+    filename: process.env.DATABASE_PATH || './credipro.sqlite',
+    driver: sqlite3.Database,
   });
 
   logger.info('[DB] SQLite database connection established');

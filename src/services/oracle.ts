@@ -184,24 +184,26 @@ export class OracleCommittee {
   }
 
   async voteApproval(loanId: Bytes32, oracleMemberId: string): Promise<boolean> {
-    if (!this.members.find(m => m.id === oracleMemberId)) {
+    const member = this.members.find(m => m.id === oracleMemberId || m.name === oracleMemberId);
+    if (!member) {
       throw new Error(`Unknown oracle member: ${oracleMemberId}`);
     }
 
+    const memberId = member.id;
     const db = await getDb();
-    
+
     // Check if member already voted
-    const existing = await db.get('SELECT * FROM oracle_votes WHERE loan_id = ? AND oracle_member_id = ?', loanId, oracleMemberId);
+    const existing = await db.get('SELECT * FROM oracle_votes WHERE loan_id = ? AND oracle_member_id = ?', loanId, memberId);
     if (existing) {
-      logger.warn(`[ORACLE] Member ${oracleMemberId} already voted for ${loanId}`);
+      logger.warn(`[ORACLE] Member ${memberId} already voted for ${loanId}`);
     } else {
-      await db.run('INSERT INTO oracle_votes (loan_id, oracle_member_id) VALUES (?, ?)', loanId, oracleMemberId);
+      await db.run('INSERT INTO oracle_votes (loan_id, oracle_member_id) VALUES (?, ?)', loanId, memberId);
     }
 
     const result = await db.get('SELECT COUNT(*) as count FROM oracle_votes WHERE loan_id = ?', loanId);
     const count = result.count;
 
-    logger.info(`[ORACLE] ${oracleMemberId} voted YES for ${loanId}. Approvals: ${count}/${this.threshold}`);
+    logger.info(`[ORACLE] ${memberId} voted YES for ${loanId}. Approvals: ${count}/${this.threshold}`);
 
     return count >= this.threshold;
   }

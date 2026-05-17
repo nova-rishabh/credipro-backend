@@ -1,33 +1,26 @@
-FROM node:20-alpine AS build
-
+# syntax=docker/dockerfile:1
+# Build from repo root: docker compose build backend
+FROM node:22-alpine AS base
 WORKDIR /app
 
+# Layer 1: deps (cached until package files change)
 COPY package.json package-lock.json ./
 COPY backend/package.json ./backend/
 
-RUN npm ci
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci -w backend
 
+# Layer 2: source + compile (cached until code changes)
 COPY backend ./backend
 COPY contracts ./contracts
 
 RUN npm run build -w backend
 
-FROM node:20-alpine
-
-WORKDIR /app
-
-COPY package.json package-lock.json ./
-COPY backend/package.json ./backend/
-
-RUN npm ci -w backend --omit=dev
-
-COPY --from=build /app/backend/dist ./backend/dist
-COPY contracts ./contracts
-
 WORKDIR /app/backend
 
-EXPOSE 3001
-
 ENV NODE_ENV=production
+ENV PORT=3001
+
+EXPOSE 3001
 
 CMD ["node", "dist/server.js"]
