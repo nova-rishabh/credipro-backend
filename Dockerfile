@@ -1,21 +1,15 @@
-# syntax=docker/dockerfile:1
-FROM node:22-alpine AS base
+FROM node:20-alpine
 WORKDIR /app
 
-COPY package.json package-lock.json ./
-RUN --mount=type=cache,target=/root/.npm \
-    npm ci
+COPY package*.json tsconfig.json ./
+RUN npm ci
 
-COPY contracts ./contracts
 COPY src ./src
-COPY scripts ./scripts
-COPY tsconfig.json ./
-
+COPY contracts ./contracts
 RUN npm run build
 
 ENV NODE_ENV=production
 ENV PORT=3001
-
 EXPOSE 3001
 
 CMD ["node", "dist/server.js"]

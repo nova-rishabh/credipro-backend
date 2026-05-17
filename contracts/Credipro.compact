@@ -1,4 +1,4 @@
-pragma language_version >= 0.16 && <= 0.23;
+pragma language_version >= 0.16 && <= 0.21;
 
 import CompactStandardLibrary;
 
@@ -125,10 +125,6 @@ export circuit requestLoan(
   poolAddress: Bytes<32>,
   defaultTermDays: Uint<64>
 ): Bytes<32> {
-  const disclosedPoolAddress = disclose(poolAddress);
-  const disclosedLoanAmount = disclose(loanAmount);
-  const disclosedDefaultTermDays = disclose(defaultTermDays);
-
   // ─────────────────────────────────────────────────────────────────────────
   // Step 1: Retrieve witness context (private, off-chain data)
   // ─────────────────────────────────────────────────────────────────────────
@@ -140,9 +136,9 @@ export circuit requestLoan(
   // ─────────────────────────────────────────────────────────────────────────
   // Step 2: Retrieve public risk parameters for the lending pool
   // ─────────────────────────────────────────────────────────────────────────
-  const riskParams = publicRiskParameters.lookup(disclosedPoolAddress);
+  const riskParams = publicRiskParameters.lookup(poolAddress);
   assert(
-    publicRiskParameters.member(disclosedPoolAddress),
+    publicRiskParameters.member(poolAddress),
     "Lending pool not found or risk params not set"
   );
 
@@ -159,10 +155,10 @@ export circuit requestLoan(
   // Must be <= maxLTV. For MVP, we assert loanAmount <= poolTVL.
   // ─────────────────────────────────────────────────────────────────────────
   assert(
-    liquidityPools.member(disclosedPoolAddress),
+    liquidityPools.member(poolAddress),
     "Pool TVL not found"
   );
-  const poolTVL = liquidityPools.lookup(disclosedPoolAddress);
+  const poolTVL = liquidityPools.lookup(poolAddress);
   
   // For MVP, we assert loanAmount <= poolTVL to ensure positive LTV.
   assert(
@@ -179,29 +175,26 @@ export circuit requestLoan(
     loanAmount as Bytes<32>
   ]);
 
-  const disclosedIdentityHash = disclose(identityHash);
-  const disclosedLenderAddr = disclose(lenderAddr);
-  const disclosedLoanId = disclose(loanId);
-
-  const loanRecord: LoanIdentityRecord = LoanIdentityRecord {
-    identityHash: disclosedIdentityHash,
-    loanId: disclosedLoanId,
-    lenderAddress: disclosedLenderAddr,
-    disbursedAmount: disclosedLoanAmount,
+  let loanRecord: LoanIdentityRecord = LoanIdentityRecord {
+    identityHash: identityHash,
+    loanId: loanId,
+    lenderAddress: lenderAddr,
+    disbursedAmount: loanAmount,
     disbursalTimestamp: 0,
-    defaultThreshold: disclosedDefaultTermDays,
+    defaultThreshold: defaultTermDays,
     isDefaulted: false,
   };
 
   // ─────────────────────────────────────────────────────────────────────────
   // Step 6: Record encrypted identity commitment on ledger (explicit disclose)
   // ─────────────────────────────────────────────────────────────────────────
-  encryptedIdentityCommitments.insert(disclosedLoanId, loanRecord);
+  const disclosedIdentityHash = disclose(identityHash);
+  encryptedIdentityCommitments.insert(loanId, loanRecord);
 
   // ─────────────────────────────────────────────────────────────────────────
   // Step 7: Return loan ID to borrower for fund disbursement phase
   // ─────────────────────────────────────────────────────────────────────────
-  return disclosedLoanId;
+  return disclose(loanId);
 }
 
 // ============================================================================
@@ -239,17 +232,15 @@ export circuit requestLoan(
  *   * Underwriter's legal recourse
  */
 export circuit triggerSlashing(loanId: Bytes<32>): [] {
-  const disclosedLoanId = disclose(loanId);
-
   // ─────────────────────────────────────────────────────────────────────────
   // Step 1: Retrieve loan identity record from ledger
   // ─────────────────────────────────────────────────────────────────────────
   assert(
-    encryptedIdentityCommitments.member(disclosedLoanId),
+    encryptedIdentityCommitments.member(loanId),
     "Loan ID not found"
   );
   
-  const loanRecord = encryptedIdentityCommitments.lookup(disclosedLoanId);
+  let loanRecord = encryptedIdentityCommitments.lookup(loanId);
 
   // ─────────────────────────────────────────────────────────────────────────
   // Step 2: Verify loan is not already marked as defaulted
@@ -264,7 +255,7 @@ export circuit triggerSlashing(loanId: Bytes<32>): [] {
   // Step 3: Verify that the default deadline has been exceeded
   // Check: current_time > disbursalTimestamp + defaultThreshold
   // ─────────────────────────────────────────────────────────────────────────
-  const defaultThresholdExceeded = check_default_deadline_exceeded();
+  let defaultThresholdExceeded = check_default_deadline_exceeded();
   assert(
     disclose(defaultThresholdExceeded),
     "Default deadline has not yet been exceeded"
@@ -273,9 +264,9 @@ export circuit triggerSlashing(loanId: Bytes<32>): [] {
   // ─────────────────────────────────────────────────────────────────────────
   // Step 4: Retrieve oracle approval count for this loan
   // ─────────────────────────────────────────────────────────────────────────
-  const oracleApprovals = oracleCommitteeSignatures.lookup(disclosedLoanId);
+  let oracleApprovals = oracleCommitteeSignatures.lookup(loanId);
   assert(
-    oracleCommitteeSignatures.member(disclosedLoanId),
+    oracleCommitteeSignatures.member(loanId),
     "No oracle approvals found for this loan"
   );
 
@@ -291,16 +282,8 @@ export circuit triggerSlashing(loanId: Bytes<32>): [] {
   // Step 6: Mark loan as defaulted on-chain
   // Update the record to reflect default status
   // ─────────────────────────────────────────────────────────────────────────
-  const updatedLoanRecord = LoanIdentityRecord {
-    identityHash: disclose(loanRecord.identityHash),
-    loanId: disclose(loanRecord.loanId),
-    lenderAddress: disclose(loanRecord.lenderAddress),
-    disbursedAmount: disclose(loanRecord.disbursedAmount),
-    disbursalTimestamp: disclose(loanRecord.disbursalTimestamp),
-    defaultThreshold: disclose(loanRecord.defaultThreshold),
-    isDefaulted: true,
-  };
-  encryptedIdentityCommitments.insert(disclosedLoanId, updatedLoanRecord);
+  loanRecord.isDefaulted = true;
+  encryptedIdentityCommitments.insert(loanId, loanRecord);
 
   // ─────────────────────────────────────────────────────────────────────────
   // Step 7: Trigger identity reveal (conceptual in MVP)
@@ -351,6 +334,6 @@ export circuit verify_master_loan_agreement(
   mla_hash: Bytes<32>,
   signature: Opaque<"Uint8Array">
 ): [] {
-  const sig_valid = verify_mla_signature(borrower_pk, mla_hash, signature);
+  let sig_valid = verify_mla_signature(borrower_pk, mla_hash, signature);
   assert(disclose(sig_valid), "Master Loan Agreement signature invalid");
 }

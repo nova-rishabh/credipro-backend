@@ -4,9 +4,11 @@
  * Exports all public APIs for interacting with the Credipro protocol
  */
 
+// Types
 export * from './types';
 
-export { CrediproClient, createCrediproClient } from './services/contract';
+// Core Modules
+export { CrediproClient, createCrediproClient } from './contract';
 export {
   mock_zkTLS_CreditScore,
   read_Identity_NFC,
@@ -19,19 +21,18 @@ export {
   initializeBorrowerContext,
   storeLoanDetails,
   clearBorrowerContext,
-  getBorrowerContext,
-  BorrowerContext,
-} from './services/prover';
+  getBorrowerContext
+} from './prover';
 
+// Oracle Service
 export {
   MockCreditBureau,
   MockIdentityProvider,
   OracleCommittee,
-  MockOracleService,
-  OracleMember,
-  mockOracleService,
-} from './services/oracle';
+  MockOracleService
+} from './oracle';
 
+// Version
 export const VERSION = '1.0.0';
 
 console.log(`[SDK] Credipro SDK loaded (v${VERSION})`);

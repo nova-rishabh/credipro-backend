@@ -1,18 +1,13 @@
 {
   "preset": "ts-jest",
   "testEnvironment": "node",
-  "moduleDirectories": ["node_modules", "../node_modules"],
-  "moduleNameMapper": {
-    "^@midnight-ntwrk/onchain-runtime-v3$": "<rootDir>/../node_modules/@midnight-ntwrk/onchain-runtime-v3/midnight_onchain_runtime_wasm_fs.js"
-  },
   "roots": ["<rootDir>/src"],
   "testMatch": ["**/__tests__/**/*.ts", "**/?(*.)+(spec|test).ts"],
   "moduleFileExtensions": ["ts", "js", "json"],
-  "setupFiles": ["<rootDir>/jest.setup.js"],
   "collectCoverageFrom": [
     "src/**/*.ts",
     "!src/**/*.d.ts",
-    "!src/**/__tests__/**"
+    "!src/**/*.test.ts"
   ],
   "coverageThreshold": {
     "global": {

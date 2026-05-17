@@ -1,7 +1,0 @@
-{
-  "watch": ["src"],
-  "ext": "ts",
-  "ignore": ["src/**/*.test.ts", "src/__tests__/**"],
-  "exec": "tsc && node dist/server.js",
-  "delay": 1
-}
