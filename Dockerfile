@@ -12,7 +12,7 @@ RUN --mount=type=cache,target=/root/.npm \
 
 # Layer 2: source + compile (cached until code changes)
 COPY backend ./backend
-COPY contracts ./contracts
+COPY backend/contracts ./contracts
 
 RUN npm run build -w backend
 

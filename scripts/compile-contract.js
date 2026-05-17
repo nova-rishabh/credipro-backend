@@ -34,7 +34,7 @@ function main() {
   if (hasCompact) {
     console.log('Compact compiler found. Compiling contract...');
     try {
-      execSync('compact build ../contracts/Credipro.compact -o dist/contracts', { stdio: 'inherit' });
+      execSync('compact build contracts/Credipro.compact -o dist/contracts', { stdio: 'inherit' });
       console.log('Contract compiled successfully!');
       return;
     } catch (e) {
