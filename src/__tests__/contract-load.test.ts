@@ -1,15 +1,16 @@
 import fs from 'fs';
 import path from 'path';
 
-const contractModulePath = path.join(__dirname, '../../dist/contracts/contract.js');
+import type { Witnesses } from '../../dist/contracts/contract/index.js';
+
+const contractModulePath = path.join(__dirname, '../../dist/contracts/contract/index.js');
 const describeContract = fs.existsSync(contractModulePath) ? describe : describe.skip;
 
 describeContract('Compiled Compact Contract Loading Verification', () => {
-  it('should successfully import and instantiate the compiled Credipro contract', () => {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { Contract, ledger, pureCircuits, Witnesses } = require('../../dist/contracts/contract');
+  it('should successfully import and instantiate the compiled Credipro contract', async () => {
+    const { Contract, ledger, pureCircuits } = await new Function("return import('../../dist/contracts/contract/index.js')")();
 
-    const dummyWitnesses = {
+    const dummyWitnesses: Witnesses<unknown> = {
       mock_zkTLS_CreditScore: (context: { privateState: unknown }) => [context.privateState, 750n],
       read_Identity_NFC: (context: { privateState: unknown }) => [context.privateState, new Uint8Array(32)],
       compute_identity_hash: (context: { privateState: unknown }, _passport: unknown) => [
@@ -24,7 +25,7 @@ describeContract('Compiled Compact Contract Loading Verification', () => {
         _hash: unknown,
         _sig: unknown,
       ) => [context.privateState, true],
-    } as InstanceType<typeof Witnesses>;
+    };
 
     const contract = new Contract(dummyWitnesses);
 
