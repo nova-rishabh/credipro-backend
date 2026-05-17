@@ -1,5 +1,6 @@
 import { CircuitInputs, CircuitOutput, RequestLoanResponse, TriggerSlashingResponse, LoanRecord, EncryptedIdentity, PublicRiskParam, Bytes32, toBytes32 } from '../types';
 import { initializeBorrowerContext, storeLoanDetails } from './prover';
+import * as midnightClient from './midnightClient';
 import * as fs from 'fs';
 import * as path from 'path';
 import { MockOracleService } from './oracle';
@@ -55,6 +56,43 @@ export class CrediproClient {
 
       // If not explicitly enabled to use compiled artifacts, keep mock flow
       // Set USE_COMPILED_CONTRACT=true to opt into running compiled circuits.
+      // On-chain via midnight-js SDK
+      if (process.env.USE_ONCHAIN_CONTRACT === 'true') {
+        // Build inputs from witness storage (keeps existing initializer semantics)
+        // For now reuse the mock inputs pattern; witness-driven inputs can be added.
+        const inputs: CircuitInputs = {
+          loanAmount,
+          poolAddress,
+          defaultTermDays,
+          borrowerPK: toBytes32('0x' + '1'.repeat(64)),
+          mlaSigned: true
+        };
+
+        try {
+          const res = await midnightClient.callProvableCircuit(this.contractAddress, 'requestLoan', [inputs], this.PROOF_GENERATION_TIMEOUT);
+          // Expect res.result as Uint8Array or hex
+          const loanIdHex = res?.result ? (typeof res.result === 'string' ? res.result : bytesToHex(res.result)) : undefined;
+
+          if (!loanIdHex) throw new Error('No loanId returned from on-chain contract');
+
+          storeLoanDetails({
+            loanId: toBytes32(loanIdHex),
+            disbursalTimestamp: Math.floor(Date.now() / 1000),
+            defaultThreshold: defaultTermDays
+          });
+
+          return {
+            success: true,
+            loanId: toBytes32(loanIdHex),
+            proof: res?.proof || undefined,
+            gasUsed: String(res?.gasCost || 0)
+          };
+        } catch (e: any) {
+          logger.error('[MIDNIGHT ERROR] requestLoan:', e);
+          return { success: false, error: e instanceof Error ? e.message : String(e) };
+        }
+      }
+
       if (process.env.USE_COMPILED_CONTRACT !== 'true' || process.env.MOCK_ORACLE_MODE === 'true' || !(await this.hasCompiledContract())) {
         const inputs: CircuitInputs = {
           loanAmount,
@@ -139,6 +177,27 @@ export class CrediproClient {
         };
       }
 
+      if (process.env.USE_ONCHAIN_CONTRACT === 'true') {
+        try {
+          // Read approvals from on-chain ledger map if available
+          const approvals = await midnightClient.readLedgerMap(this.contractAddress, 'oracleCommitteeSignatures', loanId);
+          const approvalCount = approvals ? approvals.count || Object.keys(approvals).length : 0;
+
+          if (approvalCount < 2) {
+            return { success: false, marked: false, error: 'Insufficient oracle approvals (need >= 2 of 3)' };
+          }
+
+          const res = await midnightClient.callProvableCircuit(this.contractAddress, 'triggerSlashing', [loanId], this.PROOF_GENERATION_TIMEOUT);
+
+          await this.triggerOracleDecryption(loanId);
+
+          return { success: true, marked: true, gasUsed: String(res?.gasCost || 0) };
+        } catch (e: any) {
+          logger.error('[MIDNIGHT ERROR] triggerSlashing:', e);
+          return { success: false, marked: false, error: e instanceof Error ? e.message : String(e) };
+        }
+      }
+
       if (process.env.USE_COMPILED_CONTRACT !== 'true' || process.env.MOCK_ORACLE_MODE === 'true' || !(await this.hasCompiledContract())) {
         await this.callCircuit('triggerSlashing', { loanId });
 
@@ -205,6 +264,31 @@ export class CrediproClient {
       logger.info('[CONTRACT] getLoanDetails() called');
       logger.info(`  loanId: ${loanId}`);
 
+      // If configured to use on-chain contract, read loan record from ledger
+      if (process.env.USE_ONCHAIN_CONTRACT === 'true') {
+        try {
+          const ledgerRecord = await midnightClient.readLedgerMap(this.contractAddress, 'encryptedIdentityCommitments', loanId);
+          if (!ledgerRecord) {
+            logger.info(`[MIDNIGHT] No on-chain loan record for ${loanId}`);
+          } else {
+            // Map ledger fields to LoanRecord shape
+            return {
+              loanId: loanId,
+              identityHash: ledgerRecord.identityHash || toBytes32('0x' + '0'.repeat(64)),
+              lenderAddress: ledgerRecord.lenderAddress || toBytes32('0x' + '3'.repeat(64)),
+              borrowerPublicKey: ledgerRecord.borrowerPublicKey || toBytes32('0x' + '4'.repeat(64)),
+              disbursedAmount: BigInt(ledgerRecord.disbursedAmount || 0),
+              disbursalTimestamp: ledgerRecord.disbursalTimestamp || Math.floor(Date.now() / 1000),
+              defaultThreshold: BigInt(ledgerRecord.defaultThreshold || 180),
+              isDefaulted: ledgerRecord.isDefaulted || false,
+              interestRate: ledgerRecord.interestRate || 0,
+            };
+          }
+        } catch (e) {
+          logger.error('[MIDNIGHT] getLoanDetails ledger read failed', e);
+        }
+      }
+
       // Try fetching witness-stored loan details; if not present, return a
       // plausible mock loan record so tests and callers have stable data.
       let disbursalTimestamp = Math.floor(Date.now() / 1000);
@@ -256,10 +340,31 @@ export class CrediproClient {
       logger.info('[CONTRACT] getPoolDetails() called');
       logger.info(`  poolAddress: ${poolAddress}`);
 
+      // If on-chain, read ledger maps
+      if (process.env.USE_ONCHAIN_CONTRACT === 'true') {
+        try {
+          const tvl = await midnightClient.readLedgerMap(this.contractAddress, 'liquidityPools', poolAddress);
+          const risk = await midnightClient.readLedgerMap(this.contractAddress, 'publicRiskParameters', poolAddress);
+
+          return {
+            tvl: BigInt(tvl || 0),
+            riskParams: {
+              minCreditScore: Number(risk?.minCreditScore || 0),
+              maxLTV: Number(risk?.maxLTV || 0),
+              minMonthlyIncome: BigInt(risk?.minMonthlyIncome || 0),
+              maxLoanAmount: BigInt(risk?.maxLoanAmount || 0),
+            }
+          };
+        } catch (e) {
+          logger.error('[MIDNIGHT] getPoolDetails ledger read failed', e);
+          return null;
+        }
+      }
+
       // Keep mock pool details for now
       const mockParams: { tvl: bigint; riskParams: PublicRiskParam } = {
         tvl: BigInt(10000000),
-      riskParams: {
+        riskParams: {
           // Use plain JS numbers for fields that will be serialized to JSON
           minCreditScore: 680,
           maxLTV: 80,
