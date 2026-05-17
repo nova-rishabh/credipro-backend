@@ -1,5 +1,8 @@
 import { CircuitInputs, CircuitOutput, RequestLoanResponse, TriggerSlashingResponse, LoanRecord, EncryptedIdentity, PublicRiskParam, Bytes32, toBytes32 } from '../types';
 import { initializeBorrowerContext, storeLoanDetails } from './prover';
+import * as midnightClient from './midnightClient';
+import * as fs from 'fs';
+import * as path from 'path';
 import { MockOracleService } from './oracle';
 import { logger } from '../lib/logger';
 import { hashNoPad } from 'poseidon-goldilocks';
@@ -9,6 +12,9 @@ type CircuitCallInputs = CircuitInputs | { loanId: Bytes32 } | Record<string, un
 export class CrediproClient {
   private readonly PROOF_GENERATION_TIMEOUT = 30000;
   private oracleService?: MockOracleService;
+  // Lazy-loaded compiled contract runtime
+  private contractInstance: any | null = null;
+  private contractLoaded = false;
 
   constructor(
     private contractAddress: Bytes32,
@@ -48,36 +54,104 @@ export class CrediproClient {
       logger.info(`  poolAddress: ${poolAddress}`);
       logger.info(`  defaultTermDays: ${defaultTermDays}`);
 
-      const inputs: CircuitInputs = {
-        loanAmount,
-        poolAddress,
-        defaultTermDays,
-        borrowerPK: toBytes32('0x' + '1'.repeat(64)),
-        mlaSigned: true
-      };
+      // If not explicitly enabled to use compiled artifacts, keep mock flow
+      // Set USE_COMPILED_CONTRACT=true to opt into running compiled circuits.
+      // On-chain via midnight-js SDK
+      if (process.env.USE_ONCHAIN_CONTRACT === 'true') {
+        // Build inputs from witness storage (keeps existing initializer semantics)
+        // For now reuse the mock inputs pattern; witness-driven inputs can be added.
+        const inputs: CircuitInputs = {
+          loanAmount,
+          poolAddress,
+          defaultTermDays,
+          borrowerPK: toBytes32('0x' + '1'.repeat(64)),
+          mlaSigned: true
+        };
 
-      const output = await this.callCircuit('requestLoan', inputs);
+        try {
+          const res = await midnightClient.callProvableCircuit(this.contractAddress, 'requestLoan', [inputs], this.PROOF_GENERATION_TIMEOUT);
+          // Expect res.result as Uint8Array or hex
+          const loanIdHex = res?.result ? (typeof res.result === 'string' ? res.result : bytesToHex(res.result)) : undefined;
 
-      if (!output.loanId) {
+          if (!loanIdHex) throw new Error('No loanId returned from on-chain contract');
+
+          storeLoanDetails({
+            loanId: toBytes32(loanIdHex),
+            disbursalTimestamp: Math.floor(Date.now() / 1000),
+            defaultThreshold: defaultTermDays
+          });
+
+          return {
+            success: true,
+            loanId: toBytes32(loanIdHex),
+            proof: res?.proof || undefined,
+            gasUsed: String(res?.gasCost || 0)
+          };
+        } catch (e: any) {
+          logger.error('[MIDNIGHT ERROR] requestLoan:', e);
+          return { success: false, error: e instanceof Error ? e.message : String(e) };
+        }
+      }
+
+      if (process.env.USE_COMPILED_CONTRACT !== 'true' || process.env.MOCK_ORACLE_MODE === 'true' || !(await this.hasCompiledContract())) {
+        const inputs: CircuitInputs = {
+          loanAmount,
+          poolAddress,
+          defaultTermDays,
+          borrowerPK: toBytes32('0x' + '1'.repeat(64)),
+          mlaSigned: true
+        };
+
+        const output = await this.callCircuit('requestLoan', inputs);
+
+        if (!output.loanId) {
+          return {
+            success: false,
+            error: 'Circuit failed to generate loan ID'
+          };
+        }
+
+        storeLoanDetails({
+          loanId: output.loanId,
+          disbursalTimestamp: Math.floor(Date.now() / 1000),
+          defaultThreshold: defaultTermDays
+        });
+
+        logger.info(`[CONTRACT] Loan approved! ID: ${output.loanId}`);
+
         return {
-          success: false,
-          error: 'Circuit failed to generate loan ID'
+          success: true,
+          loanId: output.loanId,
+          proof: output.proof,
+          gasUsed: '150000'
         };
       }
 
+      // Use compiled provable circuit
+      await this.ensureContractLoaded();
+
+      const poolBytes = hexToBytes(poolAddress);
+      const context = { currentQueryContext: {} };
+
+      const res = await this.contractInstance.provableCircuits.requestLoan(context, loanAmount, poolBytes, defaultTermDays);
+
+      // res.result is Uint8Array loanId
+      const loanIdHex = bytesToHex(res.result);
+
+      // persist loan details for witness store (expects Bytes32)
       storeLoanDetails({
-        loanId: output.loanId,
+        loanId: toBytes32(loanIdHex),
         disbursalTimestamp: Math.floor(Date.now() / 1000),
         defaultThreshold: defaultTermDays
       });
 
-      logger.info(`[CONTRACT] Loan approved! ID: ${output.loanId}`);
+      const proofHex = res.proofData && res.proofData.output ? bytesToHex(res.proofData.output.value || new Uint8Array()) : undefined;
 
       return {
         success: true,
-        loanId: output.loanId,
-        proof: output.proof,
-        gasUsed: '150000'
+        loanId: toBytes32(loanIdHex),
+        proof: proofHex,
+        gasUsed: String(res.gasCost || 0)
       };
     } catch (error) {
       logger.error('[CONTRACT ERROR] requestLoan:', error);
@@ -103,7 +177,47 @@ export class CrediproClient {
         };
       }
 
-      await this.callCircuit('triggerSlashing', { loanId });
+      if (process.env.USE_ONCHAIN_CONTRACT === 'true') {
+        try {
+          // Read approvals from on-chain ledger map if available
+          const approvals = await midnightClient.readLedgerMap(this.contractAddress, 'oracleCommitteeSignatures', loanId);
+          const approvalCount = approvals ? approvals.count || Object.keys(approvals).length : 0;
+
+          if (approvalCount < 2) {
+            return { success: false, marked: false, error: 'Insufficient oracle approvals (need >= 2 of 3)' };
+          }
+
+          const res = await midnightClient.callProvableCircuit(this.contractAddress, 'triggerSlashing', [loanId], this.PROOF_GENERATION_TIMEOUT);
+
+          await this.triggerOracleDecryption(loanId);
+
+          return { success: true, marked: true, gasUsed: String(res?.gasCost || 0) };
+        } catch (e: any) {
+          logger.error('[MIDNIGHT ERROR] triggerSlashing:', e);
+          return { success: false, marked: false, error: e instanceof Error ? e.message : String(e) };
+        }
+      }
+
+      if (process.env.USE_COMPILED_CONTRACT !== 'true' || process.env.MOCK_ORACLE_MODE === 'true' || !(await this.hasCompiledContract())) {
+        await this.callCircuit('triggerSlashing', { loanId });
+
+        logger.info(`[CONTRACT] Slashing triggered for loan ${loanId}`);
+
+        await this.triggerOracleDecryption(loanId);
+
+        return {
+          success: true,
+          marked: true,
+          gasUsed: '120000'
+        };
+      }
+
+      await this.ensureContractLoaded();
+
+      const loanIdBytes = hexToBytes(loanId as unknown as string);
+      const context = { currentQueryContext: {} };
+
+      const res = await this.contractInstance.provableCircuits.triggerSlashing(context, loanIdBytes);
 
       logger.info(`[CONTRACT] Slashing triggered for loan ${loanId}`);
 
@@ -112,7 +226,7 @@ export class CrediproClient {
       return {
         success: true,
         marked: true,
-        gasUsed: '120000'
+        gasUsed: String(res.gasCost || 0)
       };
     } catch (error) {
       logger.error('[CONTRACT ERROR] triggerSlashing:', error);
@@ -150,20 +264,55 @@ export class CrediproClient {
       logger.info('[CONTRACT] getLoanDetails() called');
       logger.info(`  loanId: ${loanId}`);
 
-      const mockLoan: LoanRecord = {
-        loanId,
+      // If configured to use on-chain contract, read loan record from ledger
+      if (process.env.USE_ONCHAIN_CONTRACT === 'true') {
+        try {
+          const ledgerRecord = await midnightClient.readLedgerMap(this.contractAddress, 'encryptedIdentityCommitments', loanId);
+          if (!ledgerRecord) {
+            logger.info(`[MIDNIGHT] No on-chain loan record for ${loanId}`);
+          } else {
+            // Map ledger fields to LoanRecord shape
+            return {
+              loanId: loanId,
+              identityHash: ledgerRecord.identityHash || toBytes32('0x' + '0'.repeat(64)),
+              lenderAddress: ledgerRecord.lenderAddress || toBytes32('0x' + '3'.repeat(64)),
+              borrowerPublicKey: ledgerRecord.borrowerPublicKey || toBytes32('0x' + '4'.repeat(64)),
+              disbursedAmount: BigInt(ledgerRecord.disbursedAmount || 0),
+              disbursalTimestamp: ledgerRecord.disbursalTimestamp || Math.floor(Date.now() / 1000),
+              defaultThreshold: BigInt(ledgerRecord.defaultThreshold || 180),
+              isDefaulted: ledgerRecord.isDefaulted || false,
+              interestRate: ledgerRecord.interestRate || 0,
+            };
+          }
+        } catch (e) {
+          logger.error('[MIDNIGHT] getLoanDetails ledger read failed', e);
+        }
+      }
+
+      // Try fetching witness-stored loan details; if not present, return a
+      // plausible mock loan record so tests and callers have stable data.
+      let disbursalTimestamp = Math.floor(Date.now() / 1000);
+      let defaultThreshold = BigInt(180);
+
+      try {
+        const stored = await import('./prover').then(m => m.get_loan_details());
+        disbursalTimestamp = stored.disbursalTimestamp;
+        defaultThreshold = BigInt(stored.defaultThreshold);
+      } catch (e) {
+        logger.info(`[CONTRACT] No stored loan details for ${loanId}, returning mock record`);
+      }
+
+      return {
+        loanId: loanId,
         identityHash: toBytes32('0x' + '2'.repeat(64)),
         lenderAddress: toBytes32('0x' + '3'.repeat(64)),
         borrowerPublicKey: toBytes32('0x' + '4'.repeat(64)),
-        disbursedAmount: BigInt(100000),
-        disbursalTimestamp: Math.floor(Date.now() / 1000) - 86400 * 30,
-        defaultThreshold: BigInt(180),
+        disbursedAmount: BigInt(0),
+        disbursalTimestamp,
+        defaultThreshold,
         isDefaulted: false,
-        interestRate: 500
+        interestRate: 500,
       };
-
-      logger.info(`[CONTRACT] Retrieved loan ${loanId}`);
-      return mockLoan;
     } catch (error) {
       logger.error('[CONTRACT ERROR] getLoanDetails:', error);
       return null;
@@ -191,11 +340,35 @@ export class CrediproClient {
       logger.info('[CONTRACT] getPoolDetails() called');
       logger.info(`  poolAddress: ${poolAddress}`);
 
+      // If on-chain, read ledger maps
+      if (process.env.USE_ONCHAIN_CONTRACT === 'true') {
+        try {
+          const tvl = await midnightClient.readLedgerMap(this.contractAddress, 'liquidityPools', poolAddress);
+          const risk = await midnightClient.readLedgerMap(this.contractAddress, 'publicRiskParameters', poolAddress);
+
+          return {
+            tvl: BigInt(tvl || 0),
+            riskParams: {
+              minCreditScore: Number(risk?.minCreditScore || 0),
+              maxLTV: Number(risk?.maxLTV || 0),
+              minMonthlyIncome: BigInt(risk?.minMonthlyIncome || 0),
+              maxLoanAmount: BigInt(risk?.maxLoanAmount || 0),
+            }
+          };
+        } catch (e) {
+          logger.error('[MIDNIGHT] getPoolDetails ledger read failed', e);
+          return null;
+        }
+      }
+
+      // Keep mock pool details for now
       const mockParams: { tvl: bigint; riskParams: PublicRiskParam } = {
         tvl: BigInt(10000000),
         riskParams: {
+          // Use plain JS numbers for fields that will be serialized to JSON
           minCreditScore: 680,
           maxLTV: 80,
+          // Keep monetary values as bigint and let the route stringify them
           minMonthlyIncome: BigInt(5000),
           maxLoanAmount: BigInt(500000),
         }
@@ -217,7 +390,7 @@ export class CrediproClient {
         reject(new Error(`Circuit call timeout after ${this.PROOF_GENERATION_TIMEOUT}ms`));
       }, this.PROOF_GENERATION_TIMEOUT);
 
-      try {
+    try {
         const mockProof = this.generateMockProof(circuitName, inputs);
         const mockLoanId = toBytes32('0x' + '5'.repeat(64));
 
@@ -243,7 +416,7 @@ export class CrediproClient {
     
     // Use Poseidon hash for mock ZK proof generation
     const data = Buffer.from(`${circuitName}:${inputStr}`);
-    const hashValues = [];
+    const hashValues = [] as bigint[];
     for (let i = 0; i < data.length; i += 32) {
       const chunk = data.subarray(i, i + 32);
       const padded = Buffer.alloc(32);
@@ -259,7 +432,58 @@ export class CrediproClient {
     logger.info('[ORACLE] Triggering decryption for loan', loanId);
     logger.info('[ORACLE] Would send decrypted identity to lender...');
   }
+
+  // ----------------------
+  // Compiled contract helpers
+  // ----------------------
+  private async hasCompiledContract(): Promise<boolean> {
+    const modulePath = path.join(__dirname, '../../contracts/contract/index.js');
+    return fs.existsSync(modulePath);
+  }
+
+  private async ensureContractLoaded(): Promise<void> {
+    if (this.contractLoaded) return;
+
+    const modulePath = '../../contracts/contract/index.js';
+
+    // dynamic import workaround for ESM/CJS
+    const mod = await new Function("return import('" + modulePath + "')")();
+
+    const ContractCtor = mod.Contract;
+
+    // Wire up witness functions from prover
+    const prover = await import('./prover');
+
+    const witnesses = {
+      mock_zkTLS_CreditScore: prover.witness_mock_zkTLS_CreditScore,
+      read_Identity_NFC: prover.witness_read_Identity_NFC,
+      compute_identity_hash: prover.witness_compute_identity_hash,
+      get_lender_address: prover.witness_get_lender_address,
+      check_default_deadline_exceeded: prover.witness_check_default_deadline_exceeded,
+      verify_mla_signature: prover.witness_verify_mla_signature,
+    };
+
+    this.contractInstance = new ContractCtor(witnesses);
+    this.contractLoaded = true;
+    logger.info('[CONTRACT] Compiled contract loaded');
+  }
+
 }
+
+// ----------------------
+// Helpers: hex <-> bytes
+// ----------------------
+function hexToBytes(hex: string): Uint8Array {
+  const h = hex.startsWith('0x') ? hex.slice(2) : hex;
+  if (h.length !== 64) throw new Error('Expected 32-byte hex');
+  return Uint8Array.from(Buffer.from(h, 'hex'));
+}
+
+function bytesToHex(b: Uint8Array): string {
+  return '0x' + Buffer.from(b).toString('hex');
+
+}
+
 
 export async function createCrediproClient(
   contractAddress: Bytes32,
