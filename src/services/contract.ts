@@ -3,10 +3,10 @@ import { initializeBorrowerContext, storeLoanDetails } from './prover';
 import * as midnightClient from './midnightClient';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as crypto from 'crypto';
 import { MockOracleService } from './oracle';
 import { logger } from '../lib/logger';
 import { hashNoPad } from 'poseidon-goldilocks';
-import { isDemo } from '../lib/appMode';
 
 type CircuitCallInputs = CircuitInputs | { loanId: Bytes32 } | Record<string, unknown>;
 
@@ -98,7 +98,7 @@ export class CrediproClient {
         }
       }
 
-      if (process.env.USE_COMPILED_CONTRACT !== 'true' || isDemo() || !(await this.hasCompiledContract())) {
+      if (process.env.USE_COMPILED_CONTRACT !== 'true' || process.env.MOCK_ORACLE_MODE === 'true' || !(await this.hasCompiledContract())) {
         const inputs: CircuitInputs = {
           loanAmount,
           poolAddress,
@@ -230,7 +230,7 @@ export class CrediproClient {
         }
       }
 
-      if (process.env.USE_COMPILED_CONTRACT !== 'true' || isDemo() || !(await this.hasCompiledContract())) {
+      if (process.env.USE_COMPILED_CONTRACT !== 'true' || process.env.MOCK_ORACLE_MODE === 'true' || !(await this.hasCompiledContract())) {
         await this.callCircuit('triggerSlashing', { loanId });
 
         logger.info(`[CONTRACT] Slashing triggered for loan ${loanId}`);
@@ -436,7 +436,7 @@ export class CrediproClient {
 
     try {
         const mockProof = this.generateMockProof(circuitName, inputs);
-        const mockLoanId = toBytes32('0x' + '5'.repeat(64));
+        const mockLoanId = toBytes32('0x' + crypto.randomBytes(32).toString('hex'));
 
         clearTimeout(timeout);
 
